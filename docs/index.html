@@ -1,1 +1,288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>本地转写并导出 SRT（ElevenLabs Scribe v1）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft Yahei", Arial, sans-serif; }
+    body { margin: 2rem; line-height: 1.6; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .row { display: grid; gap: .75rem; grid-template-columns: 160px 1fr; align-items: center; }
+    .row > label { color: #333; }
+    input[type="text"], input[type="password"], input[type="number"] { width: 100%; padding: .5rem .6rem; border: 1px solid #ccc; border-radius: 8px; }
+    input[type="file"] { width: 100%; }
+    .opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .5rem 1rem; margin-top: .5rem; }
+    .btn { display: inline-block; padding: .6rem 1rem; border-radius: 10px; border: 1px solid #222; background: #111; color: #fff; cursor: pointer; }
+    .btn[disabled] { opacity: .5; cursor: not-allowed; }
+    .muted { color: #666; font-size: .92rem; }
+    .log { white-space: pre-wrap; background: #fafafa; border: 1px dashed #ccc; padding: .75rem; border-radius: 8px; max-height: 220px; overflow: auto; }
+    .preview { background: #f6f9ff; padding: .75rem; border-radius: 8px; border: 1px solid #dbe6ff; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .sep { height: 1px; background: #eee; margin: 1rem 0; }
+    code { background: #f1f1f1; padding: .1rem .3rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>本地转写并导出 SRT（ElevenLabs Scribe v1）</h1>
+  <p class="muted">在本机浏览器中使用：你的 API Key 只保存在页面内存，不会写入文件。若未来分享此 HTML 给他人，请务必清楚前端暴露 Key 的风险。</p>
 
+  <div class="card">
+    <div class="row">
+      <label for="apiKey">ElevenLabs API Key</label>
+      <input id="apiKey" type="password" placeholder="粘贴你的 xi-api-key" autocomplete="off" />
+    </div>
+    <div class="row" style="margin-top:.75rem;">
+      <label for="fileInput">选择音频/视频文件</label>
+      <input id="fileInput" type="file" accept="*/*" />
+    </div>
+    <div class="opts">
+      <label><input id="assumeGerman" type="checkbox" checked/> 假定音频为德语（language_code=de）</label>
+      <label><input id="diarize" type="checkbox" checked /> 说话人分离（diarize）</label>
+      <label><input id="tagEvents" type="checkbox" checked /> 标注音频事件（tag_audio_events）</label>
+      <label>每段最长秒数：<input id="maxSegSec" type="number" step="0.5" min="1" value="4" /></label>
+      <label>每段最大字符：<input id="maxChars" type="number" min="20" value="80" /></label>
+      <label><input id="includeSpeaker" type="checkbox" checked /> 字幕前加 [Speaker X]</label>
+    </div>
+    <div style="margin-top:1rem;">
+      <button id="runBtn" class="btn">开始转写并导出 SRT</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <strong>状态 / 日志</strong>
+    <div id="log" class="log">准备就绪。</div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <strong>字幕预览（前几条）</strong>
+      <div id="preview" class="preview">（转写后显示预览片段）</div>
+    </div>
+    <div class="card">
+      <strong>下载</strong>
+      <p>
+        <button id="downloadSrtBtn" class="btn" disabled>下载 SRT</button>
+        <button id="downloadTxtBtn" class="btn" disabled>下载 TXT（转写全文）</button>
+      </p>
+      <p class="muted">文件名将自动根据源文件生成（如 <code>audio.mp3 → audio.srt</code>）。</p>
+    </div>
+  </div>
+
+  <div class="sep"></div>
+  <p class="muted">
+    技术要点：Scribe v1 支持逐词时间戳与说话人分离；浏览器通过 <code>fetch</code> 直接向 Speech-to-Text 转写端点发起
+    <code>multipart/form-data</code> 请求（头部 <code>xi-api-key</code>）。返回 JSON 含 <code>text</code>、<code>language_code</code>、<code>words</code>，
+    前端据此合并为字幕段、导出 SRT。:contentReference[oaicite:1]{index=1}
+  </p>
+
+  <script>
+    // ===== 工具：日志、下载、文件名 =====
+    const $ = (sel) => document.querySelector(sel);
+    const logBox = $("#log");
+    const previewBox = $("#preview");
+    const runBtn = $("#runBtn");
+    const downloadSrtBtn = $("#downloadSrtBtn");
+    const downloadTxtBtn = $("#downloadTxtBtn");
+
+    const appendLog = (msg) => {
+      const ts = new Date().toLocaleTimeString();
+      logBox.textContent += `\n[${ts}] ${msg}`;
+      logBox.scrollTop = logBox.scrollHeight;
+    };
+    const setLog = (msg) => { logBox.textContent = msg; };
+
+    function downloadTextFile(filename, content) {
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(url);
+      a.remove();
+    }
+
+    function baseNameNoExt(fileName) {
+      const idx = fileName.lastIndexOf(".");
+      return idx > 0 ? fileName.slice(0, idx) : fileName;
+    }
+
+    // ===== 时间格式化 & 分段算法（与 Python 版一致思想） =====
+    function secToSrtTs(t) {
+      if (t < 0) t = 0;
+      const h = Math.floor(t / 3600);
+      const m = Math.floor((t % 3600) / 60);
+      const s = Math.floor(t % 60);
+      const ms = Math.round((t - Math.floor(t)) * 1000);
+      const pad = (n, w=2) => String(n).padStart(w, "0");
+      return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms,3)}`;
+    }
+
+    function groupWordsToSegments(words, {
+      maxSegmentSec = 4.0,
+      maxChars = 80,
+      breakOnPunct = true,
+      includeSpeaker = false
+    } = {}) {
+      const segs = [];
+      let cur = { start: null, end: null, text: "", speaker: null, chars: 0 };
+
+      const flush = () => {
+        if (cur.start !== null && cur.text.trim()) {
+          segs.push({ start: cur.start, end: cur.end, text: cur.text.trim(), speaker: cur.speaker });
+        }
+      };
+
+      for (const w of words) {
+        // 兼容字典或对象
+        const wText = (w.text ?? w.word ?? w.token ?? w.value ?? "").toString();
+        if (!wText) continue;
+        const start = Number(w.start ?? w.start_time ?? w.startSeconds ?? 0);
+        const end   = Number(w.end   ?? w.end_time   ?? w.endSeconds   ?? start);
+        const speaker = w.speaker ?? w.speaker_id ?? w.speakerId ?? null;
+
+        if (cur.start === null) {
+          cur.start = start; cur.end = end; cur.text = wText; cur.speaker = speaker; cur.chars = wText.length;
+          continue;
+        }
+
+        let shouldBreak = false;
+        if ((end - cur.start) >= maxSegmentSec) shouldBreak = true;
+        if ((cur.chars + 1 + wText.length) > maxChars) shouldBreak = true;
+        if (breakOnPunct && /[.!?。？！]$/.test(cur.text.trim())) shouldBreak = true;
+
+        if (shouldBreak) {
+          flush();
+          cur = { start, end, text: wText, speaker, chars: wText.length };
+        } else {
+          cur.end = end;
+          cur.text += (cur.text.endsWith(" ") || cur.text.endsWith("\n")) ? wText : (" " + wText);
+          cur.chars += 1 + wText.length;
+        }
+      }
+      flush();
+
+      if (includeSpeaker) {
+        for (const s of segs) {
+          if (s.speaker !== null && s.speaker !== undefined) {
+            s.text = `[Speaker ${s.speaker}] ` + s.text;
+          }
+        }
+      }
+      return segs;
+    }
+
+    function segmentsToSrt(segs) {
+      let out = "";
+      segs.forEach((seg, i) => {
+        out += `${i+1}\n${secToSrtTs(seg.start)} --> ${secToSrtTs(seg.end)}\n${seg.text}\n\n`;
+      });
+      return out;
+    }
+
+    // ===== 核心：调用 ElevenLabs Speech-to-Text（表单上传） =====
+    async function createTranscript({ apiKey, file, assumeGerman, diarize, tagEvents }) {
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      fd.append("model_id", "scribe_v1");
+      if (assumeGerman) fd.append("language_code", "de"); // 留空可自动识别
+      fd.append("diarize", String(!!diarize));
+      fd.append("tag_audio_events", String(!!tagEvents));
+
+      // 端点：官方“Create transcript”（POST；multipart/form-data；头部 xi-api-key）
+      // 参考文档检索：能力页 & API 参考。:contentReference[oaicite:2]{index=2}
+      const endpoint = "https://api.elevenlabs.io/v1/speech-to-text";
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "xi-api-key": apiKey }, // 不要设置 Content-Type，浏览器会自动带上 multipart 边界
+        body: fd
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status} ${res.statusText}\n${text}`);
+      }
+      return res.json();
+    }
+
+    // ===== 事件绑定 =====
+    let lastSrt = null;
+    let lastTxt = null;
+    let lastBase = "transcript";
+
+    runBtn.addEventListener("click", async () => {
+      const apiKey = $("#apiKey").value.trim();
+      const file = $("#fileInput").files[0];
+      const assumeGerman = $("#assumeGerman").checked;
+      const diarize = $("#diarize").checked;
+      const tagEvents = $("#tagEvents").checked;
+      const maxSegSec = parseFloat($("#maxSegSec").value || "4");
+      const maxChars = parseInt($("#maxChars").value || "80", 10);
+      const includeSpeaker = $("#includeSpeaker").checked;
+
+      if (!apiKey) return alert("请先粘贴你的 ElevenLabs API Key。");
+      if (!file) return alert("请先选择一个音/视频文件。");
+
+      lastBase = baseNameNoExt(file.name) || "transcript";
+      runBtn.disabled = true; downloadSrtBtn.disabled = true; downloadTxtBtn.disabled = true;
+      setLog("开始上传并转写……（取决于网络与文件大小）");
+
+      try {
+        appendLog("上传中 / 转写中……");
+        const data = await createTranscript({ apiKey, file, assumeGerman, diarize, tagEvents });
+        // 兼容返回：可能是对象或原始 JSON
+        const text = data.text ?? data?.result?.text ?? "";
+        const words = data.words ?? data?.result?.words ?? null;
+        const lang = data.language_code ?? data?.result?.language_code ?? undefined;
+
+        appendLog("转写完成。正在生成字幕……");
+        lastTxt = text || "";
+        let previewHTML = "";
+
+        if (Array.isArray(words) && words.length) {
+          const segs = groupWordsToSegments(words, {
+            maxSegmentSec: maxSegSec,
+            maxChars: maxChars,
+            breakOnPunct: true,
+            includeSpeaker: includeSpeaker
+          });
+          lastSrt = segmentsToSrt(segs);
+
+          // 预览前 5 条
+          const preview = segs.slice(0, 5).map((s, i) => {
+            return `<div><strong>#${i+1}</strong> ${secToSrtTs(s.start)} → ${secToSrtTs(s.end)}<br>${s.text}</div>`;
+          }).join("<hr style='border:none;border-top:1px dashed #cbd5e1;margin:.5rem 0;'/>");
+          previewHTML = preview || "（返回的 words 为空，无法预览）";
+        } else {
+          // 没有逐词时间戳：退化为整段字幕（不含真实时间轴）
+          appendLog("⚠️ 未检测到逐词时间戳 words，生成了占位 SRT（固定 1 分钟时轴）。");
+          lastSrt = "1\n00:00:00,000 --> 00:59:59,000\n" + (lastTxt || "(无转写文本)") + "\n";
+          previewHTML = `<div><strong>#1</strong> 00:00:00,000 → 00:59:59,000<br>${(lastTxt || "(无转写文本)").replace(/</g,'&lt;')}</div>`;
+        }
+
+        previewBox.innerHTML = previewHTML;
+        setLog(`完成。检测到的语言：${lang ?? "未知"}。你现在可以下载 SRT/TXT。`);
+        downloadSrtBtn.disabled = false;
+        downloadTxtBtn.disabled = !lastTxt; // 有文本才允许下载 TXT
+      } catch (err) {
+        console.error(err);
+        appendLog("发生错误：\n" + (err?.message || err));
+        alert("调用失败：\n" + (err?.message || err));
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+
+    downloadSrtBtn.addEventListener("click", () => {
+      if (!lastSrt) return;
+      downloadTextFile(`${lastBase}.srt`, lastSrt);
+    });
+    downloadTxtBtn.addEventListener("click", () => {
+      if (!lastTxt) return;
+      downloadTextFile(`${lastBase}.txt`, lastTxt);
+    });
+  </script>
+</body>
+</html>
