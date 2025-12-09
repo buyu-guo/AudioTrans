@@ -284,6 +284,11 @@
         setLog(`完成。检测到的语言：${lang ?? "未知"}。你现在可以下载 SRT/TXT。`);
         downloadSrtBtn.disabled = false;
         downloadTxtBtn.disabled = !lastTxt; // 有文本才允许下载 TXT
+        // 新增：填充 TXT 全文预览，并允许展开
+        if (lastTxt) {
+          txtPreviewBox.textContent = lastTxt;
+          toggleTxtPreviewBtn.disabled = false;
+        }        
       } catch (err) {
         console.error(err);
         appendLog("发生错误：\n" + (err?.message || err));
@@ -301,7 +306,20 @@
       if (!lastTxt) return;
       downloadTextFile(`${lastBase}.txt`, lastTxt);
     });
+    // 新增：TXT 预览展开/收起逻辑
+    toggleTxtPreviewBtn.addEventListener("click", () => {
+      if (!lastTxt) return;
+      txtPreviewVisible = !txtPreviewVisible;
+      if (txtPreviewVisible) {
+        txtPreviewBox.style.display = "block";
+        toggleTxtPreviewBtn.textContent = "收起 TXT 全文";
+      } else {
+        txtPreviewBox.style.display = "none";
+        toggleTxtPreviewBtn.textContent = "展开 TXT 全文";
+      }
+    });    
   </script>
 </body>
 </html>
+
 
