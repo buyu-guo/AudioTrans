@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="zh-CN">
 <head>
@@ -69,7 +68,7 @@
       <p class="muted">文件名将自动根据源文件生成（如 <code>audio.mp3 → audio.srt</code>）。</p>
     </div>
   </div>
-  
+
   <!-- 新增：TXT 全文预览卡片 -->
   <div class="card">
     <strong>TXT 全文预览</strong>
@@ -87,7 +86,6 @@
   </div>
   <!-- 新增结束 -->
 
-  
   <div class="sep"></div>
   <p class="muted">
     技术要点：Scribe v1 支持逐词时间戳与说话人分离；浏览器通过 <code>fetch</code> 直接向 Speech-to-Text 转写端点发起
@@ -103,6 +101,10 @@
     const runBtn = $("#runBtn");
     const downloadSrtBtn = $("#downloadSrtBtn");
     const downloadTxtBtn = $("#downloadTxtBtn");
+    // 新增：TXT 全文预览相关
+    const toggleTxtPreviewBtn = $("#toggleTxtPreviewBtn");
+    const txtPreviewBox = $("#txtPreview");
+    let txtPreviewVisible = false;
 
     const appendLog = (msg) => {
       const ts = new Date().toLocaleTimeString();
@@ -209,8 +211,6 @@
       fd.append("diarize", String(!!diarize));
       fd.append("tag_audio_events", String(!!tagEvents));
 
-      // 端点：官方“Create transcript”（POST；multipart/form-data；头部 xi-api-key）
-      // 参考文档检索：能力页 & API 参考。:contentReference[oaicite:2]{index=2}
       const endpoint = "https://api.elevenlabs.io/v1/speech-to-text";
 
       const res = await fetch(endpoint, {
@@ -246,6 +246,13 @@
 
       lastBase = baseNameNoExt(file.name) || "transcript";
       runBtn.disabled = true; downloadSrtBtn.disabled = true; downloadTxtBtn.disabled = true;
+      // TXT 预览状态重置
+      toggleTxtPreviewBtn.disabled = true;
+      txtPreviewBox.style.display = "none";
+      txtPreviewBox.textContent = "（转写完成后在此显示 TXT 全文）";
+      txtPreviewVisible = false;
+      toggleTxtPreviewBtn.textContent = "展开 TXT 全文";
+
       setLog("开始上传并转写……（取决于网络与文件大小）");
 
       try {
@@ -285,11 +292,12 @@
         setLog(`完成。检测到的语言：${lang ?? "未知"}。你现在可以下载 SRT/TXT。`);
         downloadSrtBtn.disabled = false;
         downloadTxtBtn.disabled = !lastTxt; // 有文本才允许下载 TXT
+
         // 新增：填充 TXT 全文预览，并允许展开
         if (lastTxt) {
           txtPreviewBox.textContent = lastTxt;
           toggleTxtPreviewBtn.disabled = false;
-        }        
+        }
       } catch (err) {
         console.error(err);
         appendLog("发生错误：\n" + (err?.message || err));
@@ -307,6 +315,7 @@
       if (!lastTxt) return;
       downloadTextFile(`${lastBase}.txt`, lastTxt);
     });
+
     // 新增：TXT 预览展开/收起逻辑
     toggleTxtPreviewBtn.addEventListener("click", () => {
       if (!lastTxt) return;
@@ -318,9 +327,7 @@
         txtPreviewBox.style.display = "none";
         toggleTxtPreviewBtn.textContent = "展开 TXT 全文";
       }
-    });    
+    });
   </script>
 </body>
 </html>
-
-
