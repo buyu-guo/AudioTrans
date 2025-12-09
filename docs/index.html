@@ -25,7 +25,7 @@
 </head>
 <body>
   <h1>本地转写并导出 SRT（ElevenLabs Scribe v1）</h1>
-  <p class="muted">在本机浏览器中使用：你的 API Key 只保存在页面内存，不会写入文件。若未来分享此 HTML 给他人，请务必清楚前端暴露 Key 的风险。</p>
+  <p class="muted">在本机浏览器中使用：你的 API Key 只保存在页面内存，不会写入文件。</p>
 
   <div class="card">
     <div class="row">
@@ -69,7 +69,7 @@
     </div>
   </div>
 
-  <!-- 新增：TXT 全文预览卡片 -->
+  <!-- TXT 全文预览卡片 -->
   <div class="card">
     <strong>TXT 全文预览</strong>
     <p class="muted">点击下方按钮展开/收起 TXT 全文预览（可滚动）。</p>
@@ -84,249 +84,243 @@
       （转写完成后在此显示 TXT 全文）
     </div>
   </div>
-  <!-- 新增结束 -->
 
   <div class="sep"></div>
   <p class="muted">
-    技术要点：Scribe v1 支持逐词时间戳与说话人分离；浏览器通过 <code>fetch</code> 直接向 Speech-to-Text 转写端点发起
-    <code>multipart/form-data</code> 请求（头部 <code>xi-api-key</code>）。返回 JSON 含 <code>text</code>、<code>language_code</code>、<code>words</code>，
-    前端据此合并为字幕段、导出 SRT。:contentReference[oaicite:1]{index=1}
+    技术要点：Scribe v1 支持逐词时间戳与说话人分离；浏览器通过 <code>fetch</code> 直接向 Speech-to-Text 转写端点发起请求，返回 JSON 后在前端合并为字幕段、导出 SRT。
   </p>
 
+  <!-- 整个脚本放在 body 最底部 -->
   <script>
-    // ===== 工具：日志、下载、文件名 =====
-    const $ = (sel) => document.querySelector(sel);
-    const logBox = $("#log");
-    const previewBox = $("#preview");
-    const runBtn = $("#runBtn");
-    const downloadSrtBtn = $("#downloadSrtBtn");
-    const downloadTxtBtn = $("#downloadTxtBtn");
-    // 新增：TXT 全文预览相关
-    const toggleTxtPreviewBtn = $("#toggleTxtPreviewBtn");
-    const txtPreviewBox = $("#txtPreview");
-    let txtPreviewVisible = false;
+    document.addEventListener("DOMContentLoaded", function () {
+      // ===== 工具：日志、下载、文件名 =====
+      const $ = (sel) => document.querySelector(sel);
+      const logBox = $("#log");
+      const previewBox = $("#preview");
+      const runBtn = $("#runBtn");
+      const downloadSrtBtn = $("#downloadSrtBtn");
+      const downloadTxtBtn = $("#downloadTxtBtn");
+      const toggleTxtPreviewBtn = $("#toggleTxtPreviewBtn");
+      const txtPreviewBox = $("#txtPreview");
+      let txtPreviewVisible = false;
 
-    const appendLog = (msg) => {
-      const ts = new Date().toLocaleTimeString();
-      logBox.textContent += `\n[${ts}] ${msg}`;
-      logBox.scrollTop = logBox.scrollHeight;
-    };
-    const setLog = (msg) => { logBox.textContent = msg; };
-
-    function downloadTextFile(filename, content) {
-      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      URL.revokeObjectURL(url);
-      a.remove();
-    }
-
-    function baseNameNoExt(fileName) {
-      const idx = fileName.lastIndexOf(".");
-      return idx > 0 ? fileName.slice(0, idx) : fileName;
-    }
-
-    // ===== 时间格式化 & 分段算法（与 Python 版一致思想） =====
-    function secToSrtTs(t) {
-      if (t < 0) t = 0;
-      const h = Math.floor(t / 3600);
-      const m = Math.floor((t % 3600) / 60);
-      const s = Math.floor(t % 60);
-      const ms = Math.round((t - Math.floor(t)) * 1000);
-      const pad = (n, w=2) => String(n).padStart(w, "0");
-      return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms,3)}`;
-    }
-
-    function groupWordsToSegments(words, {
-      maxSegmentSec = 4.0,
-      maxChars = 80,
-      breakOnPunct = true,
-      includeSpeaker = false
-    } = {}) {
-      const segs = [];
-      let cur = { start: null, end: null, text: "", speaker: null, chars: 0 };
-
-      const flush = () => {
-        if (cur.start !== null && cur.text.trim()) {
-          segs.push({ start: cur.start, end: cur.end, text: cur.text.trim(), speaker: cur.speaker });
-        }
+      const appendLog = (msg) => {
+        const ts = new Date().toLocaleTimeString();
+        logBox.textContent += `\n[${ts}] ${msg}`;
+        logBox.scrollTop = logBox.scrollHeight;
       };
+      const setLog = (msg) => { logBox.textContent = msg; };
 
-      for (const w of words) {
-        // 兼容字典或对象
-        const wText = (w.text ?? w.word ?? w.token ?? w.value ?? "").toString();
-        if (!wText) continue;
-        const start = Number(w.start ?? w.start_time ?? w.startSeconds ?? 0);
-        const end   = Number(w.end   ?? w.end_time   ?? w.endSeconds   ?? start);
-        const speaker = w.speaker ?? w.speaker_id ?? w.speakerId ?? null;
-
-        if (cur.start === null) {
-          cur.start = start; cur.end = end; cur.text = wText; cur.speaker = speaker; cur.chars = wText.length;
-          continue;
-        }
-
-        let shouldBreak = false;
-        if ((end - cur.start) >= maxSegmentSec) shouldBreak = true;
-        if ((cur.chars + 1 + wText.length) > maxChars) shouldBreak = true;
-        if (breakOnPunct && /[.!?。？！]$/.test(cur.text.trim())) shouldBreak = true;
-
-        if (shouldBreak) {
-          flush();
-          cur = { start, end, text: wText, speaker, chars: wText.length };
-        } else {
-          cur.end = end;
-          cur.text += (cur.text.endsWith(" ") || cur.text.endsWith("\n")) ? wText : (" " + wText);
-          cur.chars += 1 + wText.length;
-        }
+      function downloadTextFile(filename, content) {
+        const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(url);
+        a.remove();
       }
-      flush();
 
-      if (includeSpeaker) {
-        for (const s of segs) {
-          if (s.speaker !== null && s.speaker !== undefined) {
-            s.text = `[Speaker ${s.speaker}] ` + s.text;
+      function baseNameNoExt(fileName) {
+        const idx = fileName.lastIndexOf(".");
+        return idx > 0 ? fileName.slice(0, idx) : fileName;
+      }
+
+      // ===== 时间格式化 & 分段算法 =====
+      function secToSrtTs(t) {
+        if (t < 0) t = 0;
+        const h = Math.floor(t / 3600);
+        const m = Math.floor((t % 3600) / 60);
+        const s = Math.floor(t % 60);
+        const ms = Math.round((t - Math.floor(t)) * 1000);
+        const pad = (n, w=2) => String(n).padStart(w, "0");
+        return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms,3)}`;
+      }
+
+      function groupWordsToSegments(words, {
+        maxSegmentSec = 4.0,
+        maxChars = 80,
+        breakOnPunct = true,
+        includeSpeaker = false
+      } = {}) {
+        const segs = [];
+        let cur = { start: null, end: null, text: "", speaker: null, chars: 0 };
+
+        const flush = () => {
+          if (cur.start !== null && cur.text.trim()) {
+            segs.push({ start: cur.start, end: cur.end, text: cur.text.trim(), speaker: cur.speaker });
+          }
+        };
+
+        for (const w of words) {
+          const wText = (w.text ?? w.word ?? w.token ?? w.value ?? "").toString();
+          if (!wText) continue;
+          const start = Number(w.start ?? w.start_time ?? w.startSeconds ?? 0);
+          const end   = Number(w.end   ?? w.end_time   ?? w.endSeconds   ?? start);
+          const speaker = w.speaker ?? w.speaker_id ?? w.speakerId ?? null;
+
+          if (cur.start === null) {
+            cur.start = start; cur.end = end; cur.text = wText; cur.speaker = speaker; cur.chars = wText.length;
+            continue;
+          }
+
+          let shouldBreak = false;
+          if ((end - cur.start) >= maxSegmentSec) shouldBreak = true;
+          if ((cur.chars + 1 + wText.length) > maxChars) shouldBreak = true;
+          if (breakOnPunct && /[.!?。？！]$/.test(cur.text.trim())) shouldBreak = true;
+
+          if (shouldBreak) {
+            flush();
+            cur = { start, end, text: wText, speaker, chars: wText.length };
+          } else {
+            cur.end = end;
+            cur.text += (cur.text.endsWith(" ") || cur.text.endsWith("\n")) ? wText : (" " + wText);
+            cur.chars += 1 + wText.length;
           }
         }
-      }
-      return segs;
-    }
+        flush();
 
-    function segmentsToSrt(segs) {
-      let out = "";
-      segs.forEach((seg, i) => {
-        out += `${i+1}\n${secToSrtTs(seg.start)} --> ${secToSrtTs(seg.end)}\n${seg.text}\n\n`;
-      });
-      return out;
-    }
-
-    // ===== 核心：调用 ElevenLabs Speech-to-Text（表单上传） =====
-    async function createTranscript({ apiKey, file, assumeGerman, diarize, tagEvents }) {
-      const fd = new FormData();
-      fd.append("file", file, file.name);
-      fd.append("model_id", "scribe_v1");
-      if (assumeGerman) fd.append("language_code", "de"); // 留空可自动识别
-      fd.append("diarize", String(!!diarize));
-      fd.append("tag_audio_events", String(!!tagEvents));
-
-      const endpoint = "https://api.elevenlabs.io/v1/speech-to-text";
-
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "xi-api-key": apiKey }, // 不要设置 Content-Type，浏览器会自动带上 multipart 边界
-        body: fd
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status} ${res.statusText}\n${text}`);
-      }
-      return res.json();
-    }
-
-    // ===== 事件绑定 =====
-    let lastSrt = null;
-    let lastTxt = null;
-    let lastBase = "transcript";
-
-    runBtn.addEventListener("click", async () => {
-      const apiKey = $("#apiKey").value.trim();
-      const file = $("#fileInput").files[0];
-      const assumeGerman = $("#assumeGerman").checked;
-      const diarize = $("#diarize").checked;
-      const tagEvents = $("#tagEvents").checked;
-      const maxSegSec = parseFloat($("#maxSegSec").value || "4");
-      const maxChars = parseInt($("#maxChars").value || "80", 10);
-      const includeSpeaker = $("#includeSpeaker").checked;
-
-      if (!apiKey) return alert("请先粘贴你的 ElevenLabs API Key。");
-      if (!file) return alert("请先选择一个音/视频文件。");
-
-      lastBase = baseNameNoExt(file.name) || "transcript";
-      runBtn.disabled = true; downloadSrtBtn.disabled = true; downloadTxtBtn.disabled = true;
-      // TXT 预览状态重置
-      toggleTxtPreviewBtn.disabled = true;
-      txtPreviewBox.style.display = "none";
-      txtPreviewBox.textContent = "（转写完成后在此显示 TXT 全文）";
-      txtPreviewVisible = false;
-      toggleTxtPreviewBtn.textContent = "展开 TXT 全文";
-
-      setLog("开始上传并转写……（取决于网络与文件大小）");
-
-      try {
-        appendLog("上传中 / 转写中……");
-        const data = await createTranscript({ apiKey, file, assumeGerman, diarize, tagEvents });
-        // 兼容返回：可能是对象或原始 JSON
-        const text = data.text ?? data?.result?.text ?? "";
-        const words = data.words ?? data?.result?.words ?? null;
-        const lang = data.language_code ?? data?.result?.language_code ?? undefined;
-
-        appendLog("转写完成。正在生成字幕……");
-        lastTxt = text || "";
-        let previewHTML = "";
-
-        if (Array.isArray(words) && words.length) {
-          const segs = groupWordsToSegments(words, {
-            maxSegmentSec: maxSegSec,
-            maxChars: maxChars,
-            breakOnPunct: true,
-            includeSpeaker: includeSpeaker
-          });
-          lastSrt = segmentsToSrt(segs);
-
-          // 预览前 5 条
-          const preview = segs.slice(0, 5).map((s, i) => {
-            return `<div><strong>#${i+1}</strong> ${secToSrtTs(s.start)} → ${secToSrtTs(s.end)}<br>${s.text}</div>`;
-          }).join("<hr style='border:none;border-top:1px dashed #cbd5e1;margin:.5rem 0;'/>");
-          previewHTML = preview || "（返回的 words 为空，无法预览）";
-        } else {
-          // 没有逐词时间戳：退化为整段字幕（不含真实时间轴）
-          appendLog("⚠️ 未检测到逐词时间戳 words，生成了占位 SRT（固定 1 分钟时轴）。");
-          lastSrt = "1\n00:00:00,000 --> 00:59:59,000\n" + (lastTxt || "(无转写文本)") + "\n";
-          previewHTML = `<div><strong>#1</strong> 00:00:00,000 → 00:59:59,000<br>${(lastTxt || "(无转写文本)").replace(/</g,'&lt;')}</div>`;
+        if (includeSpeaker) {
+          for (const s of segs) {
+            if (s.speaker !== null && s.speaker !== undefined) {
+              s.text = `[Speaker ${s.speaker}] ` + s.text;
+            }
+          }
         }
-
-        previewBox.innerHTML = previewHTML;
-        setLog(`完成。检测到的语言：${lang ?? "未知"}。你现在可以下载 SRT/TXT。`);
-        downloadSrtBtn.disabled = false;
-        downloadTxtBtn.disabled = !lastTxt; // 有文本才允许下载 TXT
-
-        // 新增：填充 TXT 全文预览，并允许展开
-        if (lastTxt) {
-          txtPreviewBox.textContent = lastTxt;
-          toggleTxtPreviewBtn.disabled = false;
-        }
-      } catch (err) {
-        console.error(err);
-        appendLog("发生错误：\n" + (err?.message || err));
-        alert("调用失败：\n" + (err?.message || err));
-      } finally {
-        runBtn.disabled = false;
+        return segs;
       }
-    });
 
-    downloadSrtBtn.addEventListener("click", () => {
-      if (!lastSrt) return;
-      downloadTextFile(`${lastBase}.srt`, lastSrt);
-    });
-    downloadTxtBtn.addEventListener("click", () => {
-      if (!lastTxt) return;
-      downloadTextFile(`${lastBase}.txt`, lastTxt);
-    });
+      function segmentsToSrt(segs) {
+        let out = "";
+        segs.forEach((seg, i) => {
+          out += `${i+1}\n${secToSrtTs(seg.start)} --> ${secToSrtTs(seg.end)}\n${seg.text}\n\n`;
+        });
+        return out;
+      }
 
-    // 新增：TXT 预览展开/收起逻辑
-    toggleTxtPreviewBtn.addEventListener("click", () => {
-      if (!lastTxt) return;
-      txtPreviewVisible = !txtPreviewVisible;
-      if (txtPreviewVisible) {
-        txtPreviewBox.style.display = "block";
-        toggleTxtPreviewBtn.textContent = "收起 TXT 全文";
-      } else {
+      // ===== 调用 ElevenLabs Speech-to-Text =====
+      async function createTranscript({ apiKey, file, assumeGerman, diarize, tagEvents }) {
+        const fd = new FormData();
+        fd.append("file", file, file.name);
+        fd.append("model_id", "scribe_v1");
+        if (assumeGerman) fd.append("language_code", "de");
+        fd.append("diarize", String(!!diarize));
+        fd.append("tag_audio_events", String(!!tagEvents));
+
+        const endpoint = "https://api.elevenlabs.io/v1/speech-to-text";
+
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "xi-api-key": apiKey },
+          body: fd
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status} ${res.statusText}\n${text}`);
+        }
+        return res.json();
+      }
+
+      // ===== 事件绑定 =====
+      let lastSrt = null;
+      let lastTxt = null;
+      let lastBase = "transcript";
+
+      runBtn.addEventListener("click", async () => {
+        const apiKey = $("#apiKey").value.trim();
+        const file = $("#fileInput").files[0];
+        const assumeGerman = $("#assumeGerman").checked;
+        const diarize = $("#diarize").checked;
+        const tagEvents = $("#tagEvents").checked;
+        const maxSegSec = parseFloat($("#maxSegSec").value || "4");
+        const maxChars = parseInt($("#maxChars").value || "80", 10);
+        const includeSpeaker = $("#includeSpeaker").checked;
+
+        if (!apiKey) return alert("请先粘贴你的 ElevenLabs API Key。");
+        if (!file) return alert("请先选择一个音/视频文件。");
+
+        lastBase = baseNameNoExt(file.name) || "transcript";
+        runBtn.disabled = true; downloadSrtBtn.disabled = true; downloadTxtBtn.disabled = true;
+        toggleTxtPreviewBtn.disabled = true;
         txtPreviewBox.style.display = "none";
+        txtPreviewBox.textContent = "（转写完成后在此显示 TXT 全文）";
+        txtPreviewVisible = false;
         toggleTxtPreviewBtn.textContent = "展开 TXT 全文";
-      }
+
+        setLog("开始上传并转写……");
+
+        try {
+          appendLog("上传中 / 转写中……");
+          const data = await createTranscript({ apiKey, file, assumeGerman, diarize, tagEvents });
+
+          const text = data.text ?? data?.result?.text ?? "";
+          const words = data.words ?? data?.result?.words ?? null;
+          const lang = data.language_code ?? data?.result?.language_code ?? undefined;
+
+          appendLog("转写完成，正在生成字幕……");
+          lastTxt = text || "";
+          let previewHTML = "";
+
+          if (Array.isArray(words) && words.length) {
+            const segs = groupWordsToSegments(words, {
+              maxSegmentSec: maxSegSec,
+              maxChars: maxChars,
+              breakOnPunct: true,
+              includeSpeaker: includeSpeaker
+            });
+            lastSrt = segmentsToSrt(segs);
+
+            const preview = segs.slice(0, 5).map((s, i) => {
+              return `<div><strong>#${i+1}</strong> ${secToSrtTs(s.start)} → ${secToSrtTs(s.end)}<br>${s.text}</div>`;
+            }).join("<hr style='border:none;border-top:1px dashed #cbd5e1;margin:.5rem 0;'/>");
+            previewHTML = preview || "（返回的 words 为空，无法预览）";
+          } else {
+            appendLog("⚠️ 未检测到逐词时间戳 words，生成占位 SRT（固定 1 分钟时轴）。");
+            lastSrt = "1\n00:00:00,000 --> 00:59:59,000\n" + (lastTxt || "(无转写文本)") + "\n";
+            previewHTML = `<div><strong>#1</strong> 00:00:00,000 → 00:59:59,000<br>${(lastTxt || "(无转写文本)").replace(/</g,'&lt;')}</div>`;
+          }
+
+          previewBox.innerHTML = previewHTML;
+          setLog(`完成。检测到的语言：${lang ?? "未知"}。现在可以下载 SRT/TXT。`);
+          downloadSrtBtn.disabled = false;
+          downloadTxtBtn.disabled = !lastTxt;
+
+          if (lastTxt) {
+            txtPreviewBox.textContent = lastTxt;
+            toggleTxtPreviewBtn.disabled = false;
+          }
+        } catch (err) {
+          console.error(err);
+          appendLog("发生错误：\n" + (err?.message || err));
+          alert("调用失败：\n" + (err?.message || err));
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+
+      downloadSrtBtn.addEventListener("click", () => {
+        if (!lastSrt) return;
+        downloadTextFile(`${lastBase}.srt`, lastSrt);
+      });
+      downloadTxtBtn.addEventListener("click", () => {
+        if (!lastTxt) return;
+        downloadTextFile(`${lastBase}.txt`, lastTxt);
+      });
+
+      // TXT 预览展开/收起
+      toggleTxtPreviewBtn.addEventListener("click", () => {
+        if (!lastTxt) return;
+        txtPreviewVisible = !txtPreviewVisible;
+        if (txtPreviewVisible) {
+          txtPreviewBox.style.display = "block";
+          toggleTxtPreviewBtn.textContent = "收起 TXT 全文";
+        } else {
+          txtPreviewBox.style.display = "none";
+          toggleTxtPreviewBtn.textContent = "展开 TXT 全文";
+        }
+      });
     });
   </script>
 </body>
