@@ -68,7 +68,25 @@
       <p class="muted">文件名将自动根据源文件生成（如 <code>audio.mp3 → audio.srt</code>）。</p>
     </div>
   </div>
+  
+  <!-- 新增：TXT 全文预览卡片 -->
+  <div class="card">
+    <strong>TXT 全文预览</strong>
+    <p class="muted">点击下方按钮展开/收起 TXT 全文预览（可滚动）。</p>
+    <p>
+      <button id="toggleTxtPreviewBtn" class="btn" disabled>展开 TXT 全文</button>
+    </p>
+    <div
+      id="txtPreview"
+      class="preview"
+      style="display:none; white-space:pre-wrap; max-height:260px; overflow:auto;"
+    >
+      （转写完成后在此显示 TXT 全文）
+    </div>
+  </div>
+  <!-- 新增结束 -->
 
+  
   <div class="sep"></div>
   <p class="muted">
     技术要点：Scribe v1 支持逐词时间戳与说话人分离；浏览器通过 <code>fetch</code> 直接向 Speech-to-Text 转写端点发起
@@ -286,3 +304,4 @@
   </script>
 </body>
 </html>
+
